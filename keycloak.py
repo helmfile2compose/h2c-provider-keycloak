@@ -229,6 +229,8 @@ class KeycloakProvider(Provider):  # pylint: disable=too-few-public-methods  # c
         """Map volume names to their source type (configmap or secret)."""
         vol_map = {}
         for v in volumes:
+            if not v:
+                continue
             vname = v.get("name", "")
             if "configMap" in v:
                 vol_map[vname] = {
@@ -248,15 +250,17 @@ class KeycloakProvider(Provider):  # pylint: disable=too-few-public-methods  # c
         pod_spec = ((spec.get("unsupported") or {})
                     .get("podTemplate") or {}).get("spec") or {}
 
-        volumes = pod_spec.get("volumes", [])
+        volumes = pod_spec.get("volumes") or []
         if not volumes:
             return []
 
         # Find keycloak container's volumeMounts
         mounts = []
-        for container in pod_spec.get("containers", []):
+        for container in (pod_spec.get("containers") or []):
+            if not container:
+                continue
             if container.get("name") == "keycloak":
-                mounts = container.get("volumeMounts", [])
+                mounts = container.get("volumeMounts") or []
                 break
         if not mounts:
             return []
@@ -265,6 +269,8 @@ class KeycloakProvider(Provider):  # pylint: disable=too-few-public-methods  # c
 
         result = []
         for vm in mounts:
+            if not vm:
+                continue
             source = vol_map.get(vm.get("name", ""))
             if source is None:
                 continue
@@ -464,6 +470,8 @@ class KeycloakProvider(Provider):  # pylint: disable=too-few-public-methods  # c
             env["KC_FEATURES_DISABLED"] = ",".join(disabled)
 
         for opt in spec.get("additionalOptions") or []:
+            if not opt:
+                continue
             env_name = "KC_" + opt["name"].upper().replace("-", "_")
             if "value" in opt:
                 env[env_name] = opt["value"]
@@ -475,8 +483,12 @@ class KeycloakProvider(Provider):  # pylint: disable=too-few-public-methods  # c
         pod_spec = ((spec.get("unsupported") or {})
                     .get("podTemplate") or {}).get("spec") or {}
         for container in pod_spec.get("containers") or []:
+            if not container:
+                continue
             if container.get("name") == "keycloak":
                 for e in container.get("env") or []:
+                    if not e:
+                        continue
                     if "value" in e:
                         env[e["name"]] = e["value"]
 
