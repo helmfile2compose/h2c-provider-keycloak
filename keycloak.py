@@ -9,14 +9,14 @@ Cache is forced to local (compose = single instance, no Infinispan clustering).
 ACME/TLS is left to Caddy. The K8s operator Deployment itself is ignored (K8s-only).
 """
 
-import base64
 import json
 import os
-import secrets
-import string
 import sys
 
-from dekube import ProviderResult, Provider, apply_replacements  # pylint: disable=import-error  # h2c resolves at runtime
+from dekube import (  # pylint: disable=import-error  # h2c resolves at runtime
+    ProviderResult, Provider, apply_replacements,
+    secret_value, generate_password, write_configmap_files, write_secret_files,
+)
 
 
 # ---- converter class -------------------------------------------------------
@@ -176,53 +176,12 @@ class KeycloakProvider(Provider):  # pylint: disable=too-few-public-methods  # c
     @staticmethod
     def _secret_val(ctx, name, key):
         """Resolve a single key from a K8s Secret in ctx.secrets."""
-        sec = ctx.secrets.get(name, {})
-        val = (sec.get("stringData") or {}).get(key)
-        if val is not None:
-            return val
-        raw = (sec.get("data") or {}).get(key)
-        if raw is not None:
-            try:
-                return base64.b64decode(raw).decode("utf-8")
-            except (ValueError, UnicodeDecodeError):
-                return raw
-        return None
+        return secret_value(ctx.secrets.get(name, {}), key)
 
     @staticmethod
     def _secret_ref(ref, ctx):
         """Resolve a Keycloak-style secret ref: {name: ..., key: ...}."""
         return KeycloakProvider._secret_val(ctx, ref.get("name", ""), ref.get("key", ""))
-
-    @staticmethod
-    def _write_data_files(name, category, data, output_dir, generated):
-        """Write data entries as files under category/name/. Returns relative dir."""
-        rel_dir = os.path.join(category, name)
-        if name not in generated:
-            generated.add(name)
-            abs_dir = os.path.join(output_dir, rel_dir)
-            os.makedirs(abs_dir, exist_ok=True)
-            out_real = os.path.realpath(output_dir) + os.sep
-            for key, value in data.items():
-                file_path = os.path.join(abs_dir, key)
-                if not os.path.realpath(file_path).startswith(out_real):
-                    continue
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(str(value))
-        return rel_dir
-
-    @staticmethod
-    def _decode_secret_data(sec):
-        """Merge stringData and base64-decoded data from a K8s Secret."""
-        result = {}
-        for k, v in (sec.get("stringData") or {}).items():
-            result[k] = v
-        for k, v in (sec.get("data") or {}).items():
-            if k not in result:
-                try:
-                    result[k] = base64.b64decode(v).decode("utf-8")
-                except (ValueError, UnicodeDecodeError):
-                    result[k] = v
-        return result
 
     @staticmethod
     def _build_volume_source_map(volumes):
@@ -297,27 +256,15 @@ class KeycloakProvider(Provider):  # pylint: disable=too-few-public-methods  # c
 
     @staticmethod
     def _mount_configmap(cm_name, ctx):
-        """Generate configmap files, return relative dir or None."""
-        cm = ctx.configmaps.get(cm_name)
-        if cm is None:
-            ctx.warnings.append(
-                f"Keycloak podTemplate: ConfigMap '{cm_name}' not found")
-            return None
-        return KeycloakProvider._write_data_files(
-            cm_name, "configmaps", cm.get("data") or {},
-            ctx.output_dir, ctx.generated_cms)
+        """Generate configmap files, return relative dir (no leading ./) or None."""
+        rel = write_configmap_files(cm_name, ctx)
+        return rel[2:] if rel and rel.startswith("./") else rel
 
     @staticmethod
     def _mount_secret(sec_name, ctx):
-        """Generate secret files, return relative dir or None."""
-        sec = ctx.secrets.get(sec_name)
-        if sec is None:
-            ctx.warnings.append(
-                f"Keycloak podTemplate: Secret '{sec_name}' not found")
-            return None
-        return KeycloakProvider._write_data_files(
-            sec_name, "secrets", KeycloakProvider._decode_secret_data(sec),
-            ctx.output_dir, ctx.generated_secrets)
+        """Generate secret files, return relative dir (no leading ./) or None."""
+        rel = write_secret_files(sec_name, ctx)
+        return rel[2:] if rel and rel.startswith("./") else rel
 
     @staticmethod
     def _rewrite_realm_urls(obj, replacements):
@@ -331,12 +278,6 @@ class KeycloakProvider(Provider):  # pylint: disable=too-few-public-methods  # c
         if isinstance(obj, list):
             return [KeycloakProvider._rewrite_realm_urls(item, replacements) for item in obj]
         return obj
-
-    @staticmethod
-    def _generate_password(length=24):
-        """Generate a random password (alphanumeric, no shell-hostile chars)."""
-        alphabet = string.ascii_letters + string.digits
-        return "".join(secrets.choice(alphabet) for _ in range(length))
 
     @staticmethod
     def _ensure_initial_admin(kc_name, output_dir, generated_secrets):
@@ -358,7 +299,7 @@ class KeycloakProvider(Provider):  # pylint: disable=too-few-public-methods  # c
                   file=sys.stderr)
         else:
             username = "temp-admin"
-            password = KeycloakProvider._generate_password()
+            password = generate_password()
             os.makedirs(secret_dir, exist_ok=True)
             with open(username_file, "w", encoding="utf-8") as f:
                 f.write(username)
